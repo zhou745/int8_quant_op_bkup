@@ -141,19 +141,37 @@ namespace mxnet {
     template<typename DType>
     struct Launch_warper{ 
       __device__ static void Map(int i,DType *src_max,DType *dst_max,
-                                DType *src_min,DType *dst_min,int current_num,int pre_num){
+                                DType *src_min,DType *dst_min,int pre_num){
         //moving pinters
-        int offset_ = i;
-        
-        bool need_compare = 2*offset_+1<=pre_num;
-        //call the function
-        //compute max/min every two element
-        if(need_compare){
-          *(dst_max+i) = *(src_max+i*2)>*(src_max+2*i+1)?*(src_max+i*2):*(src_max+i*2+1);
-          *(dst_min+i) = *(src_min+i*2)<*(src_min+2*i+1)?*(src_min+i*2):*(src_min+i*2+1);
+        int tid = threadIdx.x;
+
+        __shared__ DType max_arr[THEAD_PER_BLOCK];
+        __shared__ DType min_arr[THEAD_PER_BLOCK];
+
+        //load data into shared memory
+        if(2*i+1<pre_num+1){
+          max_arr[tid]=*(src_max+2*i)>*(src_max+2*i+1)?*(src_max+2*i):*(src_max+2*i+1);
+          min_arr[tid]=*(src_min+2*i)<*(src_min+2*i+1)?*(src_min+2*i):*(src_min+2*i+1);
+        } else if(2*i+1==pre_num){
+          max_arr[tid]=*(src_max+2*i);
+          min_arr[tid]=*(src_min+2*i);
         } else {
-          *(dst_max+i) = *(src_max+i*2);
-          *(dst_min+i) = *(src_min+i*2);
+          max_arr[tid] = DType(0.);
+          min_arr[tid] = DType(0.);
+        }
+        __syncthreads();
+        //call the function
+        //compute max/min
+        for(int s=blockDim.x/2;s>0;s>>=1){
+          if(tid<s){
+            max_arr[tid] = max_arr[tid]>max_arr[tid+s]?max_arr[tid]:max_arr[tid+s];
+            min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];
+          }
+          __syncthreads();
+        }
+        if(tid==0){
+          dst_max[blockIdx.x]=max_arr[0];
+          dst_min[blockIdx.x]=min_arr[0];
         }
       }
     };
@@ -174,12 +192,13 @@ namespace mshadow{
                              DType decay,Stream<gpu> *s,int quant_countdown,bool init){
     int num = out.size(0)*out.size(1)*out.size(2);
     DType *S_act_gpu;
-  
+    int offset = (num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+
     cudaMalloc((void**)&S_act_gpu,sizeof(DType)*2);
-    cudaMalloc((void **)&Temp,sizeof(DType)*(num+1)/2*4);
+    cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
     
     //find the max and min first
-    int offset = (num+1)/2;
+ 
     int current_num = num;
     int pre_num;
 
@@ -193,12 +212,15 @@ namespace mshadow{
     while(current_num>1){
       //after this iteration num of ele
       pre_num = current_num;
-      current_num = (current_num+1)/2;
+      
       
       mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_num,
                                                                               src_max,dst_max,
                                                                               src_min,dst_min,
-                                                                              current_num,pre_num);                                   
+                                                                              pre_num);
+
+      current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+
       if(first_iter){
         src_max = dst_max;
         src_min = dst_min;

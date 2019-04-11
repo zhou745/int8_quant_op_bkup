@@ -40,6 +40,7 @@ namespace mxnet {
         __shared__ DType quant_unit;
         __shared__ DType S_min_f;
         __shared__ DType S_max_f;
+        int tidx=threadIdx.x;
         //compute quantization inside each block
         if(tidx<1){
     
@@ -53,8 +54,14 @@ namespace mxnet {
           if(S_max_f<DType(1e-8)){
             S_max_f=DType(1e-2);
           }
+          //calculate a possible quant_unit
           quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
+          //find the aproximate level around 0
+          int blzero = -S_min_f/quant_unit;
+          int glzero = S_max_f/quant_unit;
           
+          //adjust level around zero
+          if(blzero==0)
           DType delta = quant_unit + S_min_f/ceil(-S_min_f/quant_unit);
           //adjust range 
           quant_unit = quant_unit-delta;
@@ -65,8 +72,9 @@ namespace mxnet {
 
         __syncthreads();
         DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
-        temp = temp<S_min_f?S_min_f:temp;
-        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;   
+        //temp = temp<S_min_f?S_min_f:temp;
+        //*(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
+        *(out+i)=quant_unit;
         
       }
     };

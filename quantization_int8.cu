@@ -140,6 +140,21 @@ namespace mxnet {
 
     template<typename DType>
     struct Launch_warper{ 
+      __device__ static void warpReduce(volatile DType * max_arr,
+                                 volatile DType * min_arr,int tid){
+        max_arr[tid] = max_arr[tid]>max_arr[tid+32]?max_arr[tid]:max_arr[tid+32];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+32]?min_arr[tid]:min_arr[tid+32];
+        max_arr[tid] = max_arr[tid]>max_arr[tid+16]?max_arr[tid]:max_arr[tid+16];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+16]?min_arr[tid]:min_arr[tid+16];
+        max_arr[tid] = max_arr[tid]>max_arr[tid+8]?max_arr[tid]:max_arr[tid+8];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+8]?min_arr[tid]:min_arr[tid+8];
+        max_arr[tid] = max_arr[tid]>max_arr[tid+4]?max_arr[tid]:max_arr[tid+4];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+4]?min_arr[tid]:min_arr[tid+4];
+        max_arr[tid] = max_arr[tid]>max_arr[tid+2]?max_arr[tid]:max_arr[tid+2];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+2]?min_arr[tid]:min_arr[tid+2];
+        max_arr[tid] = max_arr[tid]>max_arr[tid+1]?max_arr[tid]:max_arr[tid+1];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+1]?min_arr[tid]:min_arr[tid+1];
+      }
       __device__ static void Map(int i,DType *src_max,DType *dst_max,
                                 DType *src_min,DType *dst_min,int pre_num){
         //moving pinters
@@ -162,12 +177,15 @@ namespace mxnet {
         __syncthreads();
         //call the function
         //compute max/min
-        for(int s=blockDim.x/2;s>0;s>>=1){
+        for(int s=blockDim.x/2;s>32;s>>=1){
           if(tid<s){
             max_arr[tid] = max_arr[tid]>max_arr[tid+s]?max_arr[tid]:max_arr[tid+s];
             min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];
           }
           __syncthreads();
+        }
+        if(tid<32){
+          warpReduce(max_arr,min_arr,tid);
         }
         if(tid==0){
           dst_max[blockIdx.x]=max_arr[0];

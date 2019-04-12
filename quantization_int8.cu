@@ -83,7 +83,7 @@ namespace mxnet {
         __syncthreads();
         DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
         temp = temp<S_min_f?S_min_f:temp;
-        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;     
+        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
       }
     };
 
@@ -167,7 +167,7 @@ namespace mxnet {
         __syncthreads();
         //call the function
         //compute max/min
-        for(int s=blockDim.x/2;s>32;s>>=1){
+        for(int s=blockDim.x/2;s>0;s>>=1){
           if(tid<s){
             max_arr[tid] = max_arr[tid]>max_arr[tid+s]?max_arr[tid]:max_arr[tid+s];
             min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];        
@@ -182,8 +182,7 @@ namespace mxnet {
         }
         if(tid==0){
           dst_max[blockIdx.x]=max_arr[0];
-          dst_min[blockIdx.x]=min_arr[0];
-          
+          dst_min[blockIdx.x]=min_arr[0];          
         }
       }
     };
@@ -194,7 +193,7 @@ namespace mshadow{
   void quantization_int8_weight(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,Stream<gpu> *s){
     //find min and max
     int num = out.size(0)*out.size(1)*out.size(2);
-    int offset = (num+2*THEAD_PER_BLOCK-1)/(2*THEAD_PER_BLOCK);
+    int offset = (num+THEAD_PER_BLOCK)/(THEAD_PER_BLOCK);
     DType *Temp;
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
     

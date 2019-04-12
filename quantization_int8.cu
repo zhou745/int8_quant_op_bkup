@@ -248,7 +248,7 @@ namespace mshadow{
                              DType decay,Stream<gpu> *s,int quant_countdown,bool init){
     int num = out.size(0)*out.size(1)*out.size(2);
     DType *S_act_gpu;
-    int offset = (num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+    int offset = (num+THEAD_PER_BLOCK)/(THEAD_PER_BLOCK);
 
     cudaMalloc((void**)&S_act_gpu,sizeof(DType)*2);
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);

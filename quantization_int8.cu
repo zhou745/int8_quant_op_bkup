@@ -61,20 +61,28 @@ namespace mxnet {
           int glzero = S_max_f/quant_unit;
           
           //adjust level around zero
-          if(blzero==0)
-          DType delta = quant_unit + S_min_f/ceil(-S_min_f/quant_unit);
+          if(blzero==0){
+            blzero+=1;
+            glzero-=1;
+          }
+          if(glzero==0){
+            blzero-=1;
+            glzero+=1;
+          }
+          glzero+=QUANT_LEVEL-blzero-glzero;
+          //recalculate bould
+          DType delta = (blzero*S_max_f+glzero*S_min_f)/DType(glzero-blzero);
           //adjust range 
-          quant_unit = quant_unit-delta;
-          S_max_f=S_max_f-delta*DType(QUANT_LEVEL)/DType(2.);
-          S_min_f=S_min_f+delta*DType(QUANT_LEVEL)/DType(2.);
+          S_max_f=S_max_f+delta;
+          S_min_f=S_min_f-delta;
+          quant_unit = quant_unit+2*delta/QUANT_LEVEL;
      
         }
 
         __syncthreads();
         DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
-        //temp = temp<S_min_f?S_min_f:temp;
-        //*(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
-        *(out+i)=quant_unit;
+        temp = temp<S_min_f?S_min_f:temp;
+        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
         
       }
     };

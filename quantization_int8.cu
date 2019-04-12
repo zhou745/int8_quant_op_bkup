@@ -56,18 +56,17 @@ namespace mxnet {
           }
           //calculate a possible quant_unit
           quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
-          //DType delta = quant_unit + S_min_f/ceil(-S_min_f/quant_unit);
+          DType delta = quant_unit + S_min_f/ceil(-S_min_f/quant_unit);
           //adjust range 
-          //quant_unit = quant_unit-delta;
-          //S_max_f=S_max_f-delta*DType(QUANT_LEVEL)/DType(2.);
-          //S_min_f=S_min_f+delta*DType(QUANT_LEVEL)/DType(2.);
+          quant_unit = quant_unit-delta;
+          S_max_f=S_max_f-delta*DType(QUANT_LEVEL)/DType(2.);
+          S_min_f=S_min_f+delta*DType(QUANT_LEVEL)/DType(2.);
         }
 
         __syncthreads();
         DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
         temp = temp<S_min_f?S_min_f:temp;
-        //*(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
-        *(out+i)=S_min_f;
+        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
       }
     };
 
@@ -161,13 +160,16 @@ namespace mxnet {
         if(tid<32){
           warpReduce_max(max_arr,tid);
         }
+        __syncthreads();
         if(tid<32){
           warpReduce_min(min_arr,tid);
         }
+        __syncthreads();
         if(tid==0){
           dst_max[blockIdx.x]=max_arr[0];
           dst_min[blockIdx.x]=min_arr[0];          
         }
+        __syncthreads();
       }
     };
   }

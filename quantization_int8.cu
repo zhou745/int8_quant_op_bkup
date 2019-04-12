@@ -34,46 +34,21 @@ namespace mxnet {
   namespace op {
     template<typename DType>
     struct QUANT_WEIGHT_GPU{
-      __device__ static void Map(int i,DType *data,DType *out,int num){
-        __shared__ DType S_min[THEAD_PER_BLOCK];
-        __shared__ DType S_max[THEAD_PER_BLOCK];
+      __device__ static void Map(int i,DType *data,DType *out,DType *src_max,DType *src_min){
         __shared__ DType quant_unit;
         __shared__ DType S_min_f;
         __shared__ DType S_max_f;
         //Using reduction find the max and minx
-        int current_group = THEAD_PER_BLOCK>num?num:THEAD_PER_BLOCK;
-        int number_per_group = num/current_group;
-        int remains = num%current_group;
         //initialize data in shared memory
         int tidx = threadIdx.x;
-        if(tidx<current_group){
-          S_min[tidx] = *(data+tidx*number_per_group);
-          S_max[tidx] = *(data+tidx*number_per_group);
-        }
-        
-        __syncthreads();
-        //find max/min inside group
-        if(tidx<(current_group-1)){
-          for(int idx=0;idx<number_per_group;idx++){
-            S_min[tidx] = S_min[tidx]>*(data+tidx*number_per_group+idx)?*(data+tidx*number_per_group+idx):S_min[tidx];
-            S_max[tidx] = S_max[tidx]<*(data+tidx*number_per_group+idx)?*(data+tidx*number_per_group+idx):S_max[tidx];
-          }
-        } else if (tidx==current_group-1){
-          for(int idx=0;idx<number_per_group+remains;idx++){
-            S_min[tidx] = S_min[tidx]>*(data+tidx*number_per_group+idx)?*(data+tidx*number_per_group+idx):S_min[tidx];
-            S_max[tidx] = S_max[tidx]<*(data+tidx*number_per_group+idx)?*(data+tidx*number_per_group+idx):S_max[tidx];
-          }
-        }
-        __syncthreads();
+
+
         //use thread 0 to compute global max/min
         if(tidx<1){
     
-          S_min_f=S_min[0];
-          S_max_f=S_max[0];
-          for(int idx=0;idx<current_group;idx++){
-            S_min_f = S_min_f>S_min[idx]?S_min[idx]:S_min_f;
-            S_max_f = S_max_f<S_max[idx]?S_max[idx]:S_max_f;
-          }
+          S_min_f=src_min[0];
+          S_max_f=src_max[0];
+
           //insure 0 in the range
           if(S_min_f>DType(-1e-8)){
             S_min_f=DType(-1e-2);
@@ -163,10 +138,50 @@ namespace mshadow{
   template<typename DType>
   void quantization_int8_weight(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,Stream<gpu> *s){
     int num = out.size(0)*out.size(1)*out.size(2);
+    DType *Temp;
+    cudaMalloc((void **)&Temp,sizeof(DType)*(num+1)/2*4);
     
+    //find the max and min first
+    int offset = (num+1)/2;
+    int current_num = num;
+    int pre_num;
+
+    DType *src_max=data.dptr_;
+    DType *src_min=data.dptr_;
+    DType *dst_max=Temp;
+    DType *dst_min=Temp+offset;
+    DType *inter_media;
+    bool first_iter = true;
+
+    while(current_num>1){
+      //after this iteration num of ele
+      pre_num = current_num;
+      current_num = (current_num+1)/2;
+      
+      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_num,
+                                                                              src_max,dst_max,
+                                                                              src_min,dst_min,
+                                                                              current_num,pre_num);                                   
+      if(first_iter){
+        src_max = dst_max;
+        src_min = dst_min;
+        dst_max = Temp + 2*offset;
+        dst_min = Temp + 3*offset;
+        first_iter=false;
+      } else {
+        inter_media = src_max;
+        src_max = dst_max;
+        dst_max = inter_media;
+        inter_media = src_min;
+        src_min = dst_min;
+        dst_min = inter_media;
+      }
+    }
+
     mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU<DType>,gpu>::Launch(s,num,
                                                                     data.dptr_,out.dptr_,
-                                                                    num);
+                                                                    src_max,src_min);
+    cudaFree(Temp);
   }
   template<typename DType>
   void quantization_int8_act(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,

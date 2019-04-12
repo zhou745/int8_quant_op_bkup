@@ -56,6 +56,7 @@ namespace mxnet {
           }
           //calculate a possible quant_unit
           quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
+          /*
           //find the aproximate level around 0
           int blzero = -S_min_f/quant_unit;
           int glzero = S_max_f/quant_unit;
@@ -75,7 +76,7 @@ namespace mxnet {
           //adjust range 
           S_max_f=S_max_f+delta;
           S_min_f=S_min_f-delta;
-          quant_unit = quant_unit+2*delta/QUANT_LEVEL;
+          quant_unit = quant_unit+2*delta/QUANT_LEVEL;*/
      
         }
 

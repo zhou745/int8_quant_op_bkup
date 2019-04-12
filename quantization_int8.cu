@@ -193,7 +193,7 @@ namespace mshadow{
   void quantization_int8_weight(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,Stream<gpu> *s){
     //find min and max
     int num = out.size(0)*out.size(1)*out.size(2);
-    int offset = (num+THEAD_PER_BLOCK)/(THEAD_PER_BLOCK);
+    int offset = (num+2*THEAD_PER_BLOCK-1)/(2*THEAD_PER_BLOCK);
     DType *Temp;
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
     
@@ -201,7 +201,7 @@ namespace mshadow{
  
     int current_num = num;
     int pre_num;
-
+    int current_i;
     DType *src_max=data.dptr_;
     DType *src_min=data.dptr_;
     DType *dst_max=Temp;
@@ -212,9 +212,9 @@ namespace mshadow{
     while(current_num>1){
       //after this iteration num of ele
       pre_num = current_num;
+      current_i = (current_num+1)/2;
       
-      
-      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_num,
+      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_i,
                                                                               src_max,dst_max,
                                                                               src_min,dst_min,
                                                                               pre_num);
@@ -248,7 +248,7 @@ namespace mshadow{
                              DType decay,Stream<gpu> *s,int quant_countdown,bool init){
     int num = out.size(0)*out.size(1)*out.size(2);
     DType *S_act_gpu;
-    int offset = (num+THEAD_PER_BLOCK)/(THEAD_PER_BLOCK);
+    int offset =  (num+2*THEAD_PER_BLOCK-1)/(2*THEAD_PER_BLOCK);
 
     cudaMalloc((void**)&S_act_gpu,sizeof(DType)*2);
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
@@ -257,6 +257,7 @@ namespace mshadow{
  
     int current_num = num;
     int pre_num;
+    int current_i;
 
     DType *src_max=data.dptr_;
     DType *src_min=data.dptr_;
@@ -268,9 +269,9 @@ namespace mshadow{
     while(current_num>1){
       //after this iteration num of ele
       pre_num = current_num;
+      current_i = (current_num+1)/2;
       
-      
-      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_num,
+      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_i,
                                                                               src_max,dst_max,
                                                                               src_min,dst_min,
                                                                               pre_num);

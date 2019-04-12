@@ -56,27 +56,6 @@ namespace mxnet {
           }
           //calculate a possible quant_unit
           quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
-          /*
-          //find the aproximate level around 0
-          int blzero = -S_min_f/quant_unit;
-          int glzero = S_max_f/quant_unit;
-          
-          //adjust level around zero
-          if(blzero==0){
-            blzero+=1;
-            glzero-=1;
-          }
-          if(glzero==0){
-            blzero-=1;
-            glzero+=1;
-          }
-          glzero+=QUANT_LEVEL-blzero-glzero;
-          //recalculate bould
-          DType delta = (blzero*S_max_f+glzero*S_min_f)/DType(glzero-blzero);
-          //adjust range 
-          S_max_f=S_max_f+delta;
-          S_min_f=S_min_f-delta;
-          quant_unit = quant_unit+2*delta/QUANT_LEVEL;*/
      
         }
 
@@ -167,7 +146,7 @@ namespace mxnet {
         __syncthreads();
         //call the function
         //compute max/min
-        for(int s=blockDim.x/2;s>0;s>>=1){
+        for(int s=blockDim.x/2;s>32;s>>=1){
           if(tid<s){
             max_arr[tid] = max_arr[tid]>max_arr[tid+s]?max_arr[tid]:max_arr[tid+s];
             min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];        
@@ -193,7 +172,7 @@ namespace mshadow{
   void quantization_int8_weight(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,Stream<gpu> *s){
     //find min and max
     int num = out.size(0)*out.size(1)*out.size(2);
-    int offset = (num+2*THEAD_PER_BLOCK-1)/(2*THEAD_PER_BLOCK);
+    int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
     DType *Temp;
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
     
@@ -248,7 +227,7 @@ namespace mshadow{
                              DType decay,Stream<gpu> *s,int quant_countdown,bool init){
     int num = out.size(0)*out.size(1)*out.size(2);
     DType *S_act_gpu;
-    int offset =  (num+2*THEAD_PER_BLOCK-1)/(2*THEAD_PER_BLOCK);
+    int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
 
     cudaMalloc((void**)&S_act_gpu,sizeof(DType)*2);
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);

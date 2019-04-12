@@ -83,8 +83,7 @@ namespace mxnet {
         __syncthreads();
         DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
         temp = temp<S_min_f?S_min_f:temp;
-        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;
-        
+        *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;     
       }
     };
 
@@ -129,19 +128,21 @@ namespace mxnet {
 
     template<typename DType>
     struct Launch_warper{ 
-      __device__ static void warpReduce(volatile DType * max_arr,
-                                 volatile DType * min_arr,int tid){
+      __device__ static void warpReduce_max(volatile DType * max_arr,int tid){
         max_arr[tid] = max_arr[tid]>max_arr[tid+32]?max_arr[tid]:max_arr[tid+32];
-        min_arr[tid] = min_arr[tid]<min_arr[tid+32]?min_arr[tid]:min_arr[tid+32];
         max_arr[tid] = max_arr[tid]>max_arr[tid+16]?max_arr[tid]:max_arr[tid+16];
-        min_arr[tid] = min_arr[tid]<min_arr[tid+16]?min_arr[tid]:min_arr[tid+16];
         max_arr[tid] = max_arr[tid]>max_arr[tid+8]?max_arr[tid]:max_arr[tid+8];
-        min_arr[tid] = min_arr[tid]<min_arr[tid+8]?min_arr[tid]:min_arr[tid+8];
         max_arr[tid] = max_arr[tid]>max_arr[tid+4]?max_arr[tid]:max_arr[tid+4];
-        min_arr[tid] = min_arr[tid]<min_arr[tid+4]?min_arr[tid]:min_arr[tid+4];
         max_arr[tid] = max_arr[tid]>max_arr[tid+2]?max_arr[tid]:max_arr[tid+2];
-        min_arr[tid] = min_arr[tid]<min_arr[tid+2]?min_arr[tid]:min_arr[tid+2];
         max_arr[tid] = max_arr[tid]>max_arr[tid+1]?max_arr[tid]:max_arr[tid+1];
+      }
+
+      __device__ static void warpReduce_min(volatile DType * min_arr,int tid){
+        min_arr[tid] = min_arr[tid]<min_arr[tid+32]?min_arr[tid]:min_arr[tid+32];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+16]?min_arr[tid]:min_arr[tid+16];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+8]?min_arr[tid]:min_arr[tid+8];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+4]?min_arr[tid]:min_arr[tid+4];
+        min_arr[tid] = min_arr[tid]<min_arr[tid+2]?min_arr[tid]:min_arr[tid+2];
         min_arr[tid] = min_arr[tid]<min_arr[tid+1]?min_arr[tid]:min_arr[tid+1];
       }
       __device__ static void Map(int i,DType *src_max,DType *dst_max,
@@ -169,16 +170,20 @@ namespace mxnet {
         for(int s=blockDim.x/2;s>32;s>>=1){
           if(tid<s){
             max_arr[tid] = max_arr[tid]>max_arr[tid+s]?max_arr[tid]:max_arr[tid+s];
-            min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];
+            min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];        
           }
           __syncthreads();
         }
         if(tid<32){
-          warpReduce(max_arr,min_arr,tid);
+          warpReduce_max(max_arr,tid);
+        }
+        if(tid<32){
+          warpReduce_min(min_arr,tid);
         }
         if(tid==0){
           dst_max[blockIdx.x]=max_arr[0];
           dst_min[blockIdx.x]=min_arr[0];
+          
         }
       }
     };
@@ -189,7 +194,7 @@ namespace mshadow{
   void quantization_int8_weight(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,Stream<gpu> *s){
     //find min and max
     int num = out.size(0)*out.size(1)*out.size(2);
-    int offset = (num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+    int offset = (num+2*THEAD_PER_BLOCK-1)/(2*THEAD_PER_BLOCK);
     DType *Temp;
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
     

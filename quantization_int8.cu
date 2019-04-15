@@ -150,26 +150,27 @@ namespace mxnet {
         __syncthreads();
         //call the function
         //compute max/min
-        for(int s=blockDim.x/2;s>32;s>>=1){
+        for(int s=blockDim.x/2;s>0;s>>=1){
           if(tid<s){
             max_arr[tid] = max_arr[tid]>max_arr[tid+s]?max_arr[tid]:max_arr[tid+s];
             min_arr[tid] = min_arr[tid]<min_arr[tid+s]?min_arr[tid]:min_arr[tid+s];        
           }
           __syncthreads();
         }
+        /*
         if(tid<32){
           warpReduce_max(max_arr,tid);
         }
-        __syncthreads();
+       
         if(tid<32){
           warpReduce_min(min_arr,tid);
         }
-        __syncthreads();
+        */
         if(tid==0){
           dst_max[blockIdx.x]=max_arr[0];
           dst_min[blockIdx.x]=min_arr[0];          
         }
-        __syncthreads();
+        
       }
     };
   }

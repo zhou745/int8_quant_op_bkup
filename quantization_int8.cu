@@ -235,13 +235,13 @@ namespace mshadow{
   }
   template<typename DType>
   void quantization_int8_act(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
-                             DType *S_act,DType *Temp,
+                             Tensor<gpu, 1, DType> aux,
                              DType decay,Stream<gpu> *s,int quant_countdown,bool init){
     int num = out.size(0)*out.size(1)*out.size(2);
-    DType *S_act_gpu;
+    
     int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
     //int offset =  (num+1)/2;
-    cudaMalloc((void**)&S_act_gpu,sizeof(DType)*2);
+    DType *Temp;
     cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
     
     //find the max and min first
@@ -285,15 +285,12 @@ namespace mshadow{
       }
     }
 
-    cudaMemcpy(S_act_gpu,S_act,sizeof(DType)*2,cudaMemcpyHostToDevice);
    
     mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_ACT_GPU<DType>,gpu>::Launch(s,num,
                                                                     data.dptr_,out.dptr_,
-                                                                    S_act_gpu,src_max,src_min,
+                                                                    aux.dptr_,src_max,src_min,
                                                                     decay,quant_countdown,init);
-    cudaMemcpy(S_act,S_act_gpu,sizeof(DType)*2,cudaMemcpyDeviceToHost);
     cudaFree(Temp);
-    cudaFree(S_act_gpu);
   }
 }
 

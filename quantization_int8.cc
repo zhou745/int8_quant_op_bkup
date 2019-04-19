@@ -63,7 +63,7 @@ void quantization_int8_weight(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &
 
 template<typename DType>
 void quantization_int8_act(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
-                           DType *S_act,DType *Temp,DType decay,Stream<cpu> *s,int quant_countdown,bool init){ 
+                           Tensor<cpu, 1, DType> aux,DType decay,Stream<cpu> *s,int quant_countdown,bool init){ 
     //the quantization function
     int dim1 = data.shape_[0];
     int dim2 = data.shape_[1];
@@ -83,11 +83,11 @@ void quantization_int8_act(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out
 
     //quantiza the input
     if(~init){
-      S_max = S_max*(1-decay)+S_act[0]*decay;
-      S_min = S_min*(1-decay)+S_act[1]*decay;
+      S_max = S_max*(1-decay)+aux[0]*decay;
+      S_min = S_min*(1-decay)+aux[1]*decay;
     }
-    S_act[0]= S_max;
-    S_act[1]= S_min;
+    aux[0]= S_max;
+    aux[1]= S_min;
     DType S_unit = (S_max-S_min)/255;
     DType temp = 0.;
     if(quant_countdown==0){
@@ -125,7 +125,11 @@ Operator *CreateOp<cpu>(Quantization_int8Para param, int dtype) {
 
 Operator *Quantization_int8Prop::CreateOperatorEx(Context ctx, std::vector<TShape> *in_shape,
                                           std::vector<int> *in_type) const {
-  DO_BIND_DISPATCH(CreateOp, param_, in_type->at(0));
+   std::vector<TShape> out_shape, aux_shape;
+   std::vector<int> out_type, aux_type;
+   CHECK(InferType(in_type, &out_type, &aux_type));
+   CHECK(InferShape(in_shape, &out_shape, &aux_shape));
+   DO_BIND_DISPATCH(CreateOp, param_, in_type->at(0));
 }
 
 DMLC_REGISTER_PARAMETER(Quantization_int8Para);
@@ -138,8 +142,9 @@ MXNET_REGISTER_OP_PROPERTY(Quantization_int8, Quantization_int8Prop)
 NNVM_REGISTER_OP(Quantization_int8)
 .set_attr<nnvm::FSetInputVarAttrOnCompose>("FSetInputVarAttrOnCompose",
     [](const nnvm::NodeAttrs& attrs, nnvm::NodePtr var, const int index) {
-      if (index == 1 && var->attrs.dict.find("__init__") == var->attrs.dict.end()) {
-        var->attrs.dict["__init__"] = "[\"Constant\", {\"value\": 0.25}]";
+      if (var->attrs.dict.find("__init__") != var->attrs.dict.end()) return;
+      if (index == 1) {
+        var->attrs.dict["__init__"] = "[\"zero\", {}]";
       }
     });
 

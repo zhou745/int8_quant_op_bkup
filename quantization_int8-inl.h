@@ -49,17 +49,21 @@ namespace op {
 namespace Quantization_int8 {
 enum Quantization_int8OpInputs {kData};
 enum Quantization_int8OpOutputs {kOut};
+enum Quantization_int8OpAuxiliary {kMinmax};
 enum Quantization_int8OpResource {kRandom};
 }  // namespace leakyrelu
 
 struct Quantization_int8Para : public dmlc::Parameter<Quantization_int8Para> {
   // use int for enumeration
   bool is_weight;
+  bool is_train;
   int delay_quant;
   float ema_decay;
   DMLC_DECLARE_PARAMETER(Quantization_int8Para) {
     DMLC_DECLARE_FIELD(is_weight).set_default(true)
     .describe("if true, this quantization layer is used for weight");
+    DMLC_DECLARE_FIELD(is_train).set_default(true)
+    .describe("if true, this quantization layer is used for training");
     DMLC_DECLARE_FIELD(delay_quant).set_default(2000)
     .describe("number of steps before quatization is used");
     DMLC_DECLARE_FIELD(ema_decay).set_default(0.9)
@@ -74,8 +78,6 @@ class Quantization_int8Op : public Operator {
     param_ = param;
     quant_countdown = param_.delay_quant;
     decay_rate=DType(param_.ema_decay);
-    S_act[0]=DType(0.);
-    S_act[1]=DType(0.);
     init=true;
   }
 
@@ -91,16 +93,18 @@ class Quantization_int8Op : public Operator {
     Stream<xpu> *s = ctx.get_stream<xpu>();
     Tensor<xpu, 3, DType> data;
     Tensor<xpu, 3, DType> out;
+    Tensor<xpu, 1, DType> aux;
 
     int n = in_data[Quantization_int8::kData].shape_[0];
     int k = (in_data[Quantization_int8::kData].ndim() > 1) ? in_data[Quantization_int8::kData].shape_[1] : 1;
     Shape<3> dshape = Shape3(n, k, in_data[Quantization_int8::kData].Size()/n/k);
     data = in_data[Quantization_int8::kData].get_with_shape<xpu, 3, DType>(dshape, s);
     out = out_data[Quantization_int8::kOut].get_with_shape<xpu, 3, DType>(dshape, s);
+    aux = aux_args[Quantization_int8::kMinmax].get<xpu, 1, DType>(s);
     if(param_.is_weight){
         quantization_int8_weight(data,out,s);
     } else {
-        quantization_int8_act(data,out,S_act,Temp,decay_rate,s,quant_countdown,init);
+        quantization_int8_act(data,out,aux,decay_rate,s,quant_countdown,init);
         quant_countdown=quant_countdown>0?quant_countdown-1:quant_countdown;
         init = false;
     }
@@ -138,9 +142,8 @@ class Quantization_int8Op : public Operator {
   Quantization_int8Para param_;
   int quant_countdown;
   DType decay_rate;
-  DType S_act[2];
-  DType *Temp;
   bool init;
+  bool is_train;
 
 };  // class LeakyReLUOp
 
@@ -165,32 +168,48 @@ class Quantization_int8Prop : public OperatorProperty {
 
     CHECK_EQ(in_shape->size(), 1U) << "Input:[data]";
     const TShape &dshape = in_shape->at(Quantization_int8::kData);
+    const Shape<1> dshape_aux = Shape1(2);
+    //const TShape dshape_aux = shape_aux;
+    
     if (dshape.ndim() == 0) return false;
 
     out_shape->clear();
     out_shape->push_back(dshape);
-
+    
+    aux_shape->clear();
+    aux_shape->push_back(TShape(dshape_aux));
     return true;
   }
 
   bool InferType(std::vector<int> *in_type,
                  std::vector<int> *out_type,
                  std::vector<int> *aux_type) const override {
-    int dtype = -1;
-    for (const int& type : *in_type) {
-      type_assign(&dtype, type);
+    CHECK_GE(in_type->size(), 1U);
+    int dtype = (*in_type)[0];
+    CHECK_NE(dtype, -1) << "First input must have specified type";
+    //check assign type to in_type
+    for (index_t i = 1; i < in_type->size(); ++i) {
+      if ((*in_type)[i] == -1) {
+        (*in_type)[i] = dtype;
+      } else {
+        UNIFORM_TYPE_CHECK((*in_type)[i], dtype, ListArguments()[i]);
+      }
     }
-    for (const int& type : *out_type) {
-      type_assign(&dtype, type);
+    //check assign type for aux_type
+    for (index_t i = 0; i < aux_type->size(); ++i) {
+      if ((*aux_type)[i] != -1) {
+        UNIFORM_TYPE_CHECK((*aux_type)[i], dtype, ListArguments()[i]);
+      }
     }
-
-    for (size_t i = 0; i < in_type->size(); ++i) {
-      TYPE_ASSIGN_CHECK(*in_type, i, dtype);
-    }
-    for (size_t i = 0; i < out_type->size(); ++i) {
-      TYPE_ASSIGN_CHECK(*out_type, i, dtype);
-    }
-    return dtype != -1;
+    //push type to vector
+    int n_aux = this->ListAuxiliaryStates().size();
+    aux_type->clear();
+    for (int i = 0; i < n_aux; ++i ) aux_type->push_back(dtype);
+    int n_out = this->ListOutputs().size();
+    out_type->clear();
+    out_type->push_back(dtype);
+    for (int i = 1; i < n_out; ++i ) out_type->push_back(dtype);
+    return true;
   }
 
   OperatorProperty* Copy() const override {
@@ -232,6 +251,10 @@ class Quantization_int8Prop : public OperatorProperty {
 
   std::vector<std::string> ListOutputs() const override {
     return {"output"};
+  }
+
+  std::vector<std::string> ListAuxiliaryStates() const override {
+    return {"minmax"};
   }
 
   int NumOutputs() const override {

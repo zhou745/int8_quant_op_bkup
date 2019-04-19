@@ -79,6 +79,7 @@ class Quantization_int8Op : public Operator {
     quant_countdown = param_.delay_quant;
     decay_rate=DType(param_.ema_decay);
     init=true;
+    is_train=param_.is_train;
   }
 
   virtual void Forward(const OpContext &ctx,
@@ -104,7 +105,7 @@ class Quantization_int8Op : public Operator {
     if(param_.is_weight){
         quantization_int8_weight(data,out,s);
     } else {
-        quantization_int8_act(data,out,aux,decay_rate,s,quant_countdown,init);
+        quantization_int8_act(data,out,aux,decay_rate,s,quant_countdown,init,is_train);
         quant_countdown=quant_countdown>0?quant_countdown-1:quant_countdown;
         init = false;
     }

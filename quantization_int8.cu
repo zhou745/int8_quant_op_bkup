@@ -73,29 +73,32 @@ namespace mxnet {
     template<typename DType>
     struct QUANT_ACT_GPU{
       __device__ static void Map(int i,DType *data,DType *out,DType *S_act,DType *max_S,DType *min_S,
-                                 DType decay,int quant_countdown,bool init){
-        DType S_max_f;
-        DType S_min_f;
+                                 DType decay,int quant_countdown,bool init,bool is_train){
+        DType S_max_f=*S_act;
+        DType S_min_f=*(S_act+1);
         DType quant_unit;
-        if(init){
-          S_max_f = *max_S;
-          S_min_f = *min_S;
-        } else {
-          S_max_f = *S_act*decay+(1-decay)*(*max_S);
-          S_min_f = *(S_act+1)*decay+(1-decay)*(*min_S);
-        }
-        if(S_max_f<1e-7){
-          S_max_f=1e-2;
-        }
-        if(S_min_f>-1e-7){
-          S_min_f=-1e-2;
-        }
 
-        if(i==0){
-          *S_act = S_max_f;
-          *(S_act+1) = S_min_f;
+        if(is_train){
+          if(init){
+            S_max_f = *max_S;
+            S_min_f = *min_S;
+          } else {
+            S_max_f = *S_act*decay+(1-decay)*(*max_S);
+            S_min_f = *(S_act+1)*decay+(1-decay)*(*min_S);
+          }
+          if(S_max_f<1e-7){
+            S_max_f=1e-2;
+          }
+          if(S_min_f>-1e-7){
+            S_min_f=-1e-2;
+          }
+
+          if(i==0){
+            *S_act = S_max_f;
+            *(S_act+1) = S_min_f;
+          }
         }
-        if(quant_countdown==0){
+        if(quant_countdown==0||~is_train){
           quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
           //use i= 0 to update the recorded max/min
           DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
@@ -236,7 +239,9 @@ namespace mshadow{
   template<typename DType>
   void quantization_int8_act(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
                              Tensor<gpu, 1, DType> aux,
-                             DType decay,Stream<gpu> *s,int quant_countdown,bool init){
+                             DType decay,Stream<gpu> *s,int quant_countdown,
+                             bool init,bool is_train){
+
     int num = out.size(0)*out.size(1)*out.size(2);
     
     int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
@@ -289,7 +294,7 @@ namespace mshadow{
     mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_ACT_GPU<DType>,gpu>::Launch(s,num,
                                                                     data.dptr_,out.dptr_,
                                                                     aux.dptr_,src_max,src_min,
-                                                                    decay,quant_countdown,init);
+                                                                    decay,quant_countdown,init,is_train);
     cudaFree(Temp);
   }
 }

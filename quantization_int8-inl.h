@@ -185,32 +185,27 @@ class Quantization_int8Prop : public OperatorProperty {
   bool InferType(std::vector<int> *in_type,
                  std::vector<int> *out_type,
                  std::vector<int> *aux_type) const override {
-    CHECK_GE(in_type->size(), 1U);
-    int dtype = (*in_type)[0];
-    CHECK_NE(dtype, -1) << "First input must have specified type";
-    //check assign type to in_type
-    for (index_t i = 1; i < in_type->size(); ++i) {
-      if ((*in_type)[i] == -1) {
-        (*in_type)[i] = dtype;
-      } else {
-        UNIFORM_TYPE_CHECK((*in_type)[i], dtype, ListArguments()[i]);
-      }
+    int dtype = -1;
+    for (const int& type : *in_type) {
+      type_assign(&dtype, type);
     }
-    //check assign type for aux_type
-    for (index_t i = 0; i < aux_type->size(); ++i) {
-      if ((*aux_type)[i] != -1) {
-        UNIFORM_TYPE_CHECK((*aux_type)[i], dtype, ListArguments()[i]);
-      }
+    for (const int& type : *out_type) {
+      type_assign(&dtype, type);
     }
-    //push type to vector
-    int n_aux = this->ListAuxiliaryStates().size();
-    aux_type->clear();
-    for (int i = 0; i < n_aux; ++i ) aux_type->push_back(dtype);
-    int n_out = this->ListOutputs().size();
-    out_type->clear();
-    out_type->push_back(dtype);
-    for (int i = 1; i < n_out; ++i ) out_type->push_back(dtype);
-    return true;
+    for (const int& type : *aux_type) {
+      type_assign(&dtype, type);
+    }
+
+    for (size_t i = 0; i < in_type->size(); ++i) {
+      TYPE_ASSIGN_CHECK(*in_type, i, dtype);
+    }
+    for (size_t i = 0; i < out_type->size(); ++i) {
+      TYPE_ASSIGN_CHECK(*out_type, i, dtype);
+    }
+    for (size_t i = 0; i < aux_type->size(); ++i) {
+      TYPE_ASSIGN_CHECK(*aux_type, i, dtype);
+    }
+    return dtype != -1;
   }
 
   OperatorProperty* Copy() const override {

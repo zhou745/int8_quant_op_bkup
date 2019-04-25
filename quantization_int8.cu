@@ -72,11 +72,31 @@ namespace mxnet {
 
     template<typename DType>
     struct QUANT_ACT_GPU{
-      __device__ static void Map(int i,DType *data,DType *out,DType *S_act,DType *max_S,DType *min_S,
-                                 DType decay,int quant_countdown,bool init,bool is_train){
+      __device__ static void Map(int i,DType *data,DType *out,DType *S_act,
+                                 int quant_countdown,bool is_train){
         DType S_max_f=*S_act;
         DType S_min_f=*(S_act+1);
         DType quant_unit;
+
+        if(quant_countdown==0||~is_train){
+          quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
+          //use i= 0 to update the recorded max/min
+          DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
+          temp = temp<S_min_f?S_min_f:temp;
+          *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;      
+        } else {
+          *(out+i)=*(data+i);
+        }
+        
+      }
+    };
+    
+    template<typename DType>
+    struct UPDATE_MINMAX{
+      __device__ static void Map(int i,DType *S_act,DType *max_S,DType *min_S,
+                                 DType decay,bool init,bool is_train){
+        DType S_max_f=*S_act;
+        DType S_min_f=*(S_act+1);
 
         if(is_train){
           if(init){
@@ -91,26 +111,13 @@ namespace mxnet {
           }
           if(S_min_f>-1e-7){
             S_min_f=-1e-2;
-          }
-
-          if(i==0){
-            *S_act = S_max_f;
-            *(S_act+1) = S_min_f;
-          }
-        }
-        if(quant_countdown==0||~is_train){
-          quant_unit = (S_max_f-S_min_f)/DType(QUANT_LEVEL);
-          //use i= 0 to update the recorded max/min
-          DType temp = *(data+i)>S_max_f?S_max_f:*(data+i);
-          temp = temp<S_min_f?S_min_f:temp;
-          *(out+i)=floor((temp-S_min_f)/quant_unit+0.5)*quant_unit+S_min_f;      
-        } else {
-          *(out+i)=*(data+i);
+          }     
+          *S_act = S_max_f;
+          *(S_act+1) = S_min_f;
         }
         
       }
     };
-
 
     template<typename DType>
     struct Launch_warper{ 
@@ -289,12 +296,14 @@ namespace mshadow{
         dst_min = inter_media;
       }
     }
-
-   
+    mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_MINMAX<DType>,gpu>::Launch(s,1,
+                                                                    aux.dptr_,src_max,src_min,
+                                                                    decay,init,is_train);
+    
     mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_ACT_GPU<DType>,gpu>::Launch(s,num,
                                                                     data.dptr_,out.dptr_,
-                                                                    aux.dptr_,src_max,src_min,
-                                                                    decay,quant_countdown,init,is_train);
+                                                                    aux.dptr_,
+                                                                    quant_countdown,is_train);
     cudaFree(Temp);
   }
 }

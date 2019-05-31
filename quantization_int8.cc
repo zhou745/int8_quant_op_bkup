@@ -33,7 +33,8 @@ template<typename DType>
 void quantization_int8_weight(std::string qmod,
                               Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
                               Tensor<cpu, 1, DType> aux,
-                              Stream<cpu> *s){ 
+                              Stream<cpu> *s,
+                              bool init){ 
     //the quantization function
     int dim1 = data.shape_[0];
     int dim2 = data.shape_[1];

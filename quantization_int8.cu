@@ -249,7 +249,16 @@ namespace mxnet {
         *(out+i)=*(gdata+i)*factor;     
       }
     };
-    
+
+    template<typename DType>
+    struct INIT_LOG2T{
+      __device__ static void Map(int i,DType *log2t,DType *max_val,DType*min_val){
+        DType t=DType(::abs(*max_val)>::abs(*min_val)? std::abs(*max_val):std::abs(*min_val));
+        t=DType(t>1e-3?t:1e-3);  
+        *(log2t)-=log2f(t);
+      }
+    };
+
     template<typename DType>
     struct UPDATE_LOG2T{
       __device__ static void Map(int i,DType *log2t,DType grad){
@@ -293,64 +302,81 @@ namespace mxnet {
 }
 namespace mshadow{
   template<typename DType>
+  void Find_minmax(int num,int offset,DType *Temp,
+                   DType *src_max,DType *src_min,Stream<gpu> *s){
+    int current_num = num;
+    int pre_num;
+    int current_i;
+    DType *dst_max=Temp;
+    DType *dst_min=Temp+offset;
+    DType *inter_media;
+
+    bool first_iter = true;
+      
+    while(current_num>1){
+      //after this iteration num of ele
+      pre_num = current_num;
+      current_i = (current_num+1)/2;
+      
+      mxnet::op::mxnet_op::Kernel<mxnet::op::REDUCE_MINMAX<DType>,gpu>::Launch(s,current_i,
+                                                                              src_max,dst_max,
+                                                                              src_min,dst_min,
+                                                                              pre_num);
+
+      current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+      //current_num=current_i;
+      if(first_iter){
+        src_max = dst_max;
+        src_min = dst_min;
+        dst_max = Temp + 2*offset;
+        dst_min = Temp + 3*offset;
+        first_iter=false;
+      } else {
+        inter_media = src_max;
+        src_max = dst_max;
+        dst_max = inter_media;
+        inter_media = src_min;
+        src_min = dst_min;
+        dst_min = inter_media;
+      }
+    }
+  }
+
+  template<typename DType>
   void quantization_int8_weight(std::string qmod,
                                 Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
                                 Tensor<gpu, 1, DType> aux,
-                                Stream<gpu> *s){
+                                Stream<gpu> *s,
+                                bool init){
     //find min and max
     int num = out.size(0)*out.size(1)*out.size(2);
-
+    int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
     //choose quantization path
-    if(qmod==std::string("minmax")){
+    if(qmod==std::string("minmax")||init){
       //declare space for reduction
-      int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
       DType *Temp;
       cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
-
-      int current_num = num;
-      int pre_num;
-      int current_i;
       DType *src_max=data.dptr_;
-      DType *src_min=data.dptr_;
-      DType *dst_max=Temp;
-      DType *dst_min=Temp+offset;
-      DType *inter_media;
-      bool first_iter = true;
-      
-      while(current_num>1){
-        //after this iteration num of ele
-        pre_num = current_num;
-        current_i = (current_num+1)/2;
-        
-        mxnet::op::mxnet_op::Kernel<mxnet::op::REDUCE_MINMAX<DType>,gpu>::Launch(s,current_i,
-                                                                                src_max,dst_max,
-                                                                                src_min,dst_min,
-                                                                                pre_num);
-  
-        current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
-        //current_num=current_i;
-        if(first_iter){
-          src_max = dst_max;
-          src_min = dst_min;
-          dst_max = Temp + 2*offset;
-          dst_min = Temp + 3*offset;
-          first_iter=false;
-        } else {
-          inter_media = src_max;
-          src_max = dst_max;
-          dst_max = inter_media;
-          inter_media = src_min;
-          src_min = dst_min;
-          dst_min = inter_media;
-        }
-      }
-
+      DType *src_min=data.dptr_; 
+      //perfrom reduction , fing min max
+      Find_minmax(num,offset,Temp,src_max,src_min,s);
       //perform quantization
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_MINMAX<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
                                                                                          src_max,src_min);
       cudaFree(Temp);
     } else if(qmod==std::string("power2")){
+      if(init){
+        DType *Temp;
+        cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
+        DType *src_max=data.dptr_;
+        DType *src_min=data.dptr_;
+        Find_minmax(num,offset,Temp,src_max,src_min,s);
+        mxnet::op::mxnet_op::Kernel<mxnet::op::INIT_LOG2T<DType>,gpu>::Launch(s,1,
+                                                                              aux.dptr_,
+                                                                              src_max,src_min);
+        cudaFree(Temp);
+      }
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
                                                                                          aux[0]);
@@ -364,51 +390,16 @@ namespace mshadow{
                              bool init,bool is_train){
 
     int num = out.size(0)*out.size(1)*out.size(2);
+    int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
     if(qmod==std::string("minmax")){
-      int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
       DType *Temp;
       cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
       
-      //find the max and min first
-   
-      int current_num = num;
-      int pre_num;
-      int current_i;
-  
+      //find the max and min first 
       DType *src_max=data.dptr_;
       DType *src_min=data.dptr_;
-      DType *dst_max=Temp;
-      DType *dst_min=Temp+offset;
-      DType *inter_media;
-      bool first_iter = true;
-  
-      while(current_num>1){
-        //after this iteration num of ele
-        pre_num = current_num;
-        current_i = (current_num+1)/2;
-        
-        mxnet::op::mxnet_op::Kernel<mxnet::op::REDUCE_MINMAX<DType>,gpu>::Launch(s,current_i,
-                                                                                src_max,dst_max,
-                                                                                src_min,dst_min,
-                                                                                pre_num);
-  
-        current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
-        //current_num=current_i;
-        if(first_iter){
-          src_max = dst_max;
-          src_min = dst_min;
-          dst_max = Temp + 2*offset;
-          dst_min = Temp + 3*offset;
-          first_iter=false;
-        } else {
-          inter_media = src_max;
-          src_max = dst_max;
-          dst_max = inter_media;
-          inter_media = src_min;
-          src_min = dst_min;
-          dst_min = inter_media;
-        }
-      }
+      Find_minmax(num,offset,Temp,src_max,src_min,s);
+
       mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_MINMAX<DType>,gpu>::Launch(s,1,
                                                                       aux.dptr_,src_max,src_min,
                                                                       decay,init,is_train);
@@ -419,6 +410,17 @@ namespace mshadow{
                                                                       quant_countdown,is_train);
       cudaFree(Temp);
     } else if(qmod==std::string("power2")){
+      if(init){
+        DType *Temp;
+        cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
+        DType *src_max=data.dptr_;
+        DType *src_min=data.dptr_;
+        Find_minmax(num,offset,Temp,src_max,src_min,s);
+        mxnet::op::mxnet_op::Kernel<mxnet::op::INIT_LOG2T<DType>,gpu>::Launch(s,1,
+                                                                              aux.dptr_,
+                                                                              src_max,src_min);
+        cudaFree(Temp);
+      }
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
                                                                                          aux[0]);

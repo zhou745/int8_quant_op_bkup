@@ -30,7 +30,10 @@
 
 namespace mshadow{
 template<typename DType>
-void quantization_int8_weight(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,Stream<cpu> *s){ 
+void quantization_int8_weight(string qmod,
+                              Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
+                              Tensor<cpu, 1, DType> aux,
+                              Stream<cpu> *s){ 
     //the quantization function
     int dim1 = data.shape_[0];
     int dim2 = data.shape_[1];
@@ -62,7 +65,8 @@ void quantization_int8_weight(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &
 }
 
 template<typename DType>
-void quantization_int8_act(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
+void quantization_int8_act(string qmod,
+                           Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
                            Tensor<cpu, 1, DType> aux,DType decay,Stream<cpu> *s,int quant_countdown,bool init,bool is_train){ 
     //the quantization function
     int dim1 = data.shape_[0];
@@ -114,6 +118,14 @@ void quantization_int8_act(Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out
         }
       }
     }
+}
+
+template<typename DType>
+void quantization_grad(string qmod,
+                       Tensor<cpu, 3, DType> gdata,Tensor<cpu, 3, DType> &grad,
+                       Tensor<cpu, 3, DType> data,Tensor<cpu, 1, DType> &aux,
+                       Stream<cpu> *s){
+    std::cout<<"cpu version not implemented"<<std::endl;
 }
 }
 

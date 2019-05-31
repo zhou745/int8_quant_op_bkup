@@ -33,7 +33,7 @@
 namespace mxnet {
   namespace op {
     template<typename DType>
-    struct QUANT_WEIGHT_GPU{
+    struct QUANT_WEIGHT_GPU_MINMAX{
       __device__ static void Map(int i,DType *data,DType *out,
                                  DType *src_max,DType *src_min){
 
@@ -71,7 +71,28 @@ namespace mxnet {
     };
 
     template<typename DType>
-    struct QUANT_ACT_GPU{
+    struct QUANT_WEIGHT_GPU_POWER2{
+      __device__ static void Map(int i,DType *data,DType *out,
+                                 DType log2t){
+
+        __shared__ DType quant_unit;
+
+        int tidx=threadIdx.x;
+        //compute quantization inside each block
+        if(tidx<1){
+          quant_unit=(::pow(2.0,::ceil(log2t))*DType(2.0))/DType(QUANT_LEVEL);
+        }
+
+        __syncthreads();
+        DType int8_val=DType(floor(*(data+i)/quant_unit+0.5));
+        int8_val=int8_val>DType(QUANT_LEVEL/2-1)?DType(QUANT_LEVEL/2-1):int8_val;
+        int8_val=int8_val<-DType(QUANT_LEVEL/2)?-DType(QUANT_LEVEL/2):int8_val;
+        *(out+i)=int8_val*quant_unit;
+      }
+    };
+
+    template<typename DType>
+    struct QUANT_ACT_GPU_MINMAX{
       __device__ static void Map(int i,DType *data,DType *out,DType *S_act,
                                  int quant_countdown,bool is_train){
         DType S_max_f=*S_act;
@@ -120,7 +141,7 @@ namespace mxnet {
     };
 
     template<typename DType>
-    struct Launch_warper{ 
+    struct REDUCE_MINMAX{ 
       __device__ static void warpReduce_max(volatile DType * max_arr,int tid,int i,int pre_num){
         if(2*(i+32)<pre_num){max_arr[tid] = max_arr[tid]>max_arr[tid+32]?max_arr[tid]:max_arr[tid+32];}
         if(2*(i+16)<pre_num){max_arr[tid] = max_arr[tid]>max_arr[tid+16]?max_arr[tid]:max_arr[tid+16];}
@@ -186,125 +207,279 @@ namespace mxnet {
         
       }
     };
+
+    template<typename DType>
+    struct GRAD_POWER2{
+      __device__ static void Map(int i,DType *data,DType *gdata,DType *out,DType log2t){
+        __shared__ DType quant_unit;
+
+        int tidx=threadIdx.x;
+        //compute quantization inside each block
+        if(tidx<1){
+          quant_unit=(::pow(2.0,::ceil(log2t))*DType(2.0))/DType(QUANT_LEVEL);
+        }
+        __syncthreads();
+
+        DType int8_val=DType(floor(*(data+i)/quant_unit+0.5));
+        int8_val=int8_val>DType(QUANT_LEVEL/2-1)?DType(QUANT_LEVEL/2-1):int8_val;
+        int8_val=int8_val<-DType(QUANT_LEVEL/2)?-DType(QUANT_LEVEL/2):int8_val;
+
+        DType local_grad=::log(2)*quant_unit*int8_val;
+        
+        *(out+i)=*(gdata+i)*local_grad;     
+      }
+    };
+
+    template<typename DType>
+    struct GRAD_WEIGHT_POWER2{
+      __device__ static void Map(int i,DType *data,DType *gdata,DType *out,DType log2t){
+        __shared__ DType quant_unit;
+
+        int tidx=threadIdx.x;
+        //compute quantization inside each block
+        if(tidx<1){
+          quant_unit=(::pow(2.0,::ceil(log2t))*DType(2.0))/DType(QUANT_LEVEL);
+        }
+        __syncthreads();
+
+        DType int8_val=DType(floor(*(data+i)/quant_unit+0.5));
+        DType factor=int8_val>DType(QUANT_LEVEL/2-1)?DType(0.):DType(1.);
+        factor=int8_val<-DType(QUANT_LEVEL/2)?DType(0.):factor;
+        
+        *(out+i)=*(gdata+i)*factor;     
+      }
+    };
+    
+    template<typename DType>
+    struct UPDATE_LOG2T{
+      __device__ static void Map(int i,DType *log2t,DType grad){
+        __shared__ DType norm=grad/DType(::abs(grad)+1e-3);
+        
+        *(log2t)-=1e-3*norm;
+      }
+    };
+    template<typename DType>
+    struct REDUCE_POWER2{ 
+      __device__ static void Map(int i,DType *grad_src,DType *grad_dst,int pre_num){
+        //moving pinters
+        int tid = threadIdx.x;
+
+        __shared__ DType sum_grad[THEAD_PER_BLOCK];
+
+
+        //load data into shared memory
+        if(2*i+1<pre_num){
+          sum_grad[tid]=*(grad_src+2*i)+*(grad_src+2*i+1);
+        } else if(2*i+1==pre_num){
+          sum_grad[tid]=*(grad_src+2*i);
+        } else{
+          sum_grad[tid]=DType(0.);
+        }
+        
+        __syncthreads();
+        //call the function
+        //compute max/min
+        for(int s=blockDim.x/2;s>0;s>>=1){
+          if(tid<s&&2*(i+s)<pre_num){
+            sum_grad[tid] = sum_grad[tid]+sum_grad[tid+s];
+          }
+          __syncthreads();
+        }   
+        if(tid==0){
+          grad_dst[blockIdx.x]=sum_grad[0];         
+        }
+      }
+    };
   }
 }
 namespace mshadow{
   template<typename DType>
-  void quantization_int8_weight(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,Stream<gpu> *s){
+  void quantization_int8_weight(string qmod,
+                                Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
+                                Tensor<gpu, 1, DType> aux,
+                                Stream<gpu> *s){
     //find min and max
     int num = out.size(0)*out.size(1)*out.size(2);
-    int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
-    //int offset =  (num+1)/2;
-    DType *Temp;
-    cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
-    
-    //find the max and min first
- 
-    int current_num = num;
-    int pre_num;
-    int current_i;
-    DType *src_max=data.dptr_;
-    DType *src_min=data.dptr_;
-    DType *dst_max=Temp;
-    DType *dst_min=Temp+offset;
-    DType *inter_media;
-    bool first_iter = true;
 
-    while(current_num>1){
-      //after this iteration num of ele
-      pre_num = current_num;
-      current_i = (current_num+1)/2;
+    //choose quantization path
+    if(qmod==string("minmax")){
+      //declare space for reduction
+      int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
+      DType *Temp;
+      cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
+
+      int current_num = num;
+      int pre_num;
+      int current_i;
+      DType *src_max=data.dptr_;
+      DType *src_min=data.dptr_;
+      DType *dst_max=Temp;
+      DType *dst_min=Temp+offset;
+      DType *inter_media;
+      bool first_iter = true;
       
-      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_i,
-                                                                              src_max,dst_max,
-                                                                              src_min,dst_min,
-                                                                              pre_num);
-
-      current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
-      //current_num=current_i;
-      if(first_iter){
-        src_max = dst_max;
-        src_min = dst_min;
-        dst_max = Temp + 2*offset;
-        dst_min = Temp + 3*offset;
-        first_iter=false;
-      } else {
-        inter_media = src_max;
-        src_max = dst_max;
-        dst_max = inter_media;
-        inter_media = src_min;
-        src_min = dst_min;
-        dst_min = inter_media;
+      while(current_num>1){
+        //after this iteration num of ele
+        pre_num = current_num;
+        current_i = (current_num+1)/2;
+        
+        mxnet::op::mxnet_op::Kernel<mxnet::op::REDUCE_MINMAX<DType>,gpu>::Launch(s,current_i,
+                                                                                src_max,dst_max,
+                                                                                src_min,dst_min,
+                                                                                pre_num);
+  
+        current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+        //current_num=current_i;
+        if(first_iter){
+          src_max = dst_max;
+          src_min = dst_min;
+          dst_max = Temp + 2*offset;
+          dst_min = Temp + 3*offset;
+          first_iter=false;
+        } else {
+          inter_media = src_max;
+          src_max = dst_max;
+          dst_max = inter_media;
+          inter_media = src_min;
+          src_min = dst_min;
+          dst_min = inter_media;
+        }
       }
+
+      //perform quantization
+      mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_MINMAX<DType>,gpu>::Launch(s,num,
+                                                                                         data.dptr_,out.dptr_,
+                                                                                         src_max,src_min);
+      cudaFree(Temp);
+    } else if(qmod==string("power2")){
+      mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
+                                                                                         data.dptr_,out.dptr_,
+                                                                                         aux[0]);
     }
-    //perform quantization
-    mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU<DType>,gpu>::Launch(s,num,
-                                                                    data.dptr_,out.dptr_,
-                                                                    src_max,src_min);
-    cudaFree(Temp);
   }
   template<typename DType>
-  void quantization_int8_act(Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
+  void quantization_int8_act(string qmod,
+                             Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
                              Tensor<gpu, 1, DType> aux,
                              DType decay,Stream<gpu> *s,int quant_countdown,
                              bool init,bool is_train){
 
     int num = out.size(0)*out.size(1)*out.size(2);
-    
-    int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
-    //int offset =  (num+1)/2;
-    DType *Temp;
-    cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
-    
-    //find the max and min first
- 
-    int current_num = num;
-    int pre_num;
-    int current_i;
-
-    DType *src_max=data.dptr_;
-    DType *src_min=data.dptr_;
-    DType *dst_max=Temp;
-    DType *dst_min=Temp+offset;
-    DType *inter_media;
-    bool first_iter = true;
-
-    while(current_num>1){
-      //after this iteration num of ele
-      pre_num = current_num;
-      current_i = (current_num+1)/2;
+    if(qmod==string("minmax")){
+      int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
+      DType *Temp;
+      cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
       
-      mxnet::op::mxnet_op::Kernel<mxnet::op::Launch_warper<DType>,gpu>::Launch(s,current_i,
-                                                                              src_max,dst_max,
-                                                                              src_min,dst_min,
-                                                                              pre_num);
-
-      current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
-      //current_num=current_i;
-      if(first_iter){
-        src_max = dst_max;
-        src_min = dst_min;
-        dst_max = Temp + 2*offset;
-        dst_min = Temp + 3*offset;
-        first_iter=false;
-      } else {
-        inter_media = src_max;
-        src_max = dst_max;
-        dst_max = inter_media;
-        inter_media = src_min;
-        src_min = dst_min;
-        dst_min = inter_media;
+      //find the max and min first
+   
+      int current_num = num;
+      int pre_num;
+      int current_i;
+  
+      DType *src_max=data.dptr_;
+      DType *src_min=data.dptr_;
+      DType *dst_max=Temp;
+      DType *dst_min=Temp+offset;
+      DType *inter_media;
+      bool first_iter = true;
+  
+      while(current_num>1){
+        //after this iteration num of ele
+        pre_num = current_num;
+        current_i = (current_num+1)/2;
+        
+        mxnet::op::mxnet_op::Kernel<mxnet::op::REDUCE_MINMAX<DType>,gpu>::Launch(s,current_i,
+                                                                                src_max,dst_max,
+                                                                                src_min,dst_min,
+                                                                                pre_num);
+  
+        current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+        //current_num=current_i;
+        if(first_iter){
+          src_max = dst_max;
+          src_min = dst_min;
+          dst_max = Temp + 2*offset;
+          dst_min = Temp + 3*offset;
+          first_iter=false;
+        } else {
+          inter_media = src_max;
+          src_max = dst_max;
+          dst_max = inter_media;
+          inter_media = src_min;
+          src_min = dst_min;
+          dst_min = inter_media;
+        }
       }
+      mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_MINMAX<DType>,gpu>::Launch(s,1,
+                                                                      aux.dptr_,src_max,src_min,
+                                                                      decay,init,is_train);
+      
+      mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_ACT_GPU_MINMAX<DType>,gpu>::Launch(s,num,
+                                                                      data.dptr_,out.dptr_,
+                                                                      aux.dptr_,
+                                                                      quant_countdown,is_train);
+      cudaFree(Temp);
+    } else if(qmod==string("power2")){
+      mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
+                                                                                         data.dptr_,out.dptr_,
+                                                                                         aux[0]);
     }
-    mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_MINMAX<DType>,gpu>::Launch(s,1,
-                                                                    aux.dptr_,src_max,src_min,
-                                                                    decay,init,is_train);
+  }
+
+  template<typename DType>
+  void quantization_grad(string qmod,
+                         Tensor<gpu, 3, DType> gdata,Tensor<gpu, 3, DType> &grad,
+                         Tensor<gpu, 3, DType> data,Tensor<gpu, 1, DType> &aux,
+                         Stream<gpu> *s){
+  
+  int num = grad.size(0)*grad.size(1)*grad.size(2);
+  int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
+  DType *Temp;
+  cudaMalloc((void **)&Temp,sizeof(DType)*offset*2);
+  //compute gradient for threash hold
+  mxnet::op::mxnet_op::Kernel<mxnet::op::GRAD_POWER2<DType>,gpu>::Launch(s,num,
+                                                                         data.dptr_,gdata.dptr_,
+                                                                         grad.dptr_,aux[0]);
+  //reduce gradient for threash hold
+  int current_num = num;
+  int pre_num;
+  int current_i;
+  DType *src_grad=grad.dptr_;
+  DType *dst_grad=Temp;
+  DType *inter_media;
+  bool first_iter = true;
+  
+  while(current_num>1){
+    //after this iteration num of ele
+    pre_num = current_num;
+    current_i = (current_num+1)/2;
     
-    mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_ACT_GPU<DType>,gpu>::Launch(s,num,
-                                                                    data.dptr_,out.dptr_,
-                                                                    aux.dptr_,
-                                                                    quant_countdown,is_train);
-    cudaFree(Temp);
+    mxnet::op::mxnet_op::Kernel<mxnet::op::REDUCE_POWER2<DType>,gpu>::Launch(s,current_i,
+                                                                             src_grad,dst_grad,
+                                                                             pre_num);
+
+    current_num = (current_num+2*THEAD_PER_BLOCK-1)/(THEAD_PER_BLOCK*2);
+    //current_num=current_i;
+    if(first_iter){
+      src_grad = dst_grad;
+      dst_grad = Temp + offset;
+      first_iter=false;
+    } else {
+      inter_media = src_grad;
+      src_grad = dst_grad;
+      dst_grad = inter_media;
+    }
+  }
+  //compute grad
+  mxnet::op::mxnet_op::Kernel<mxnet::op::GRAD_WEIGHT_POWER2<DType>,gpu>::Launch(s,num,
+                                                                                data.dptr_,gdata.dptr_,
+                                                                                grad.dptr_,aux[0]);
+  //update aux
+  mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_LOG2T<DType>,gpu>::Launch(s,1,
+                                                                          src_grad[0],
+                                                                          aux.dptr_);
+
+  cudaFree(Temp);
   }
 }
 

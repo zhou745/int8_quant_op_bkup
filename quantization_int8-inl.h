@@ -59,7 +59,7 @@ struct Quantization_int8Para : public dmlc::Parameter<Quantization_int8Para> {
   bool is_train;
   int delay_quant;
   float ema_decay;
-  string quant_mod; 
+  std::string quant_mod; 
   DMLC_DECLARE_PARAMETER(Quantization_int8Para) {
     DMLC_DECLARE_FIELD(is_weight).set_default(true)
     .describe("if true, this quantization layer is used for weight");
@@ -69,7 +69,7 @@ struct Quantization_int8Para : public dmlc::Parameter<Quantization_int8Para> {
     .describe("number of steps before quatization is used");
     DMLC_DECLARE_FIELD(ema_decay).set_default(0.9)
     .describe("the rate at which quantization range decay in ema");
-    DMLC_DECLARE_FIELD(quant_mod).set_default("minmax")
+    DMLC_DECLARE_FIELD(quant_mod).set_default("power2")
     .describe("select quantization mode");
   }
 };
@@ -133,6 +133,7 @@ class Quantization_int8Op : public Operator {
     Tensor<xpu, 3, DType> gdata;
     Tensor<xpu, 3, DType> grad;
     Tensor<xpu, 3, DType> data;
+    Tensor<xpu, 1, DType> aux;
     int n = out_grad[Quantization_int8::kOut].shape_[0];
     int k = (out_grad[Quantization_int8::kOut].ndim() > 1) ? out_grad[Quantization_int8::kOut].shape_[1] : 1;
     Shape<3> dshape = Shape3(n, k, out_grad[Quantization_int8::kOut].Size()/n/k);
@@ -140,9 +141,9 @@ class Quantization_int8Op : public Operator {
     gdata = in_grad[Quantization_int8::kData].get_with_shape<xpu, 3, DType>(dshape, s);
     data = in_data[Quantization_int8::kData].get_with_shape<xpu, 3, DType>(dshape, s);
     aux = aux_args[Quantization_int8::kMinmax].get<xpu, 1, DType>(s);
-    if(param_.quant_mod==string("minmax")){
+    if(param_.quant_mod==std::string("minmax")){
       mshadow::Copy(gdata, grad, s);
-    } else if(param_.quant_mod==string("power2")){
+    } else if(param_.quant_mod==std::string("power2")){
       quantization_grad(param_.quant_mod,gdata,grad,
                         data,aux,
                         s);

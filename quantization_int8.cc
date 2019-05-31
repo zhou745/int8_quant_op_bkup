@@ -30,7 +30,7 @@
 
 namespace mshadow{
 template<typename DType>
-void quantization_int8_weight(string qmod,
+void quantization_int8_weight(std::string qmod,
                               Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
                               Tensor<cpu, 1, DType> aux,
                               Stream<cpu> *s){ 
@@ -65,7 +65,7 @@ void quantization_int8_weight(string qmod,
 }
 
 template<typename DType>
-void quantization_int8_act(string qmod,
+void quantization_int8_act(std::string qmod,
                            Tensor<cpu, 3, DType> data,Tensor<cpu, 3, DType> &out,
                            Tensor<cpu, 1, DType> aux,DType decay,Stream<cpu> *s,int quant_countdown,bool init,bool is_train){ 
     //the quantization function
@@ -121,7 +121,7 @@ void quantization_int8_act(string qmod,
 }
 
 template<typename DType>
-void quantization_grad(string qmod,
+void quantization_grad(std::string qmod,
                        Tensor<cpu, 3, DType> gdata,Tensor<cpu, 3, DType> &grad,
                        Tensor<cpu, 3, DType> data,Tensor<cpu, 1, DType> &aux,
                        Stream<cpu> *s){

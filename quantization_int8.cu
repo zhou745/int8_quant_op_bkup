@@ -224,7 +224,7 @@ namespace mxnet {
         int8_val=int8_val>DType(QUANT_LEVEL/2-1)?DType(QUANT_LEVEL/2-1):int8_val;
         int8_val=int8_val<-DType(QUANT_LEVEL/2)?-DType(QUANT_LEVEL/2):int8_val;
 
-        DType local_grad=::log(2)*quant_unit*int8_val;
+        DType local_grad=logf(2.0)*quant_unit*int8_val;
         
         *(out+i)=*(gdata+i)*local_grad;     
       }
@@ -253,8 +253,7 @@ namespace mxnet {
     template<typename DType>
     struct UPDATE_LOG2T{
       __device__ static void Map(int i,DType *log2t,DType grad){
-        __shared__ DType norm=grad/DType(::abs(grad)+1e-3);
-        
+        DType norm=grad/DType(::abs(grad)+1e-3);        
         *(log2t)-=1e-3*norm;
       }
     };
@@ -294,7 +293,7 @@ namespace mxnet {
 }
 namespace mshadow{
   template<typename DType>
-  void quantization_int8_weight(string qmod,
+  void quantization_int8_weight(std::string qmod,
                                 Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
                                 Tensor<gpu, 1, DType> aux,
                                 Stream<gpu> *s){
@@ -302,7 +301,7 @@ namespace mshadow{
     int num = out.size(0)*out.size(1)*out.size(2);
 
     //choose quantization path
-    if(qmod==string("minmax")){
+    if(qmod==std::string("minmax")){
       //declare space for reduction
       int offset = (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
       DType *Temp;
@@ -351,21 +350,21 @@ namespace mshadow{
                                                                                          data.dptr_,out.dptr_,
                                                                                          src_max,src_min);
       cudaFree(Temp);
-    } else if(qmod==string("power2")){
+    } else if(qmod==std::string("power2")){
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
                                                                                          aux[0]);
     }
   }
   template<typename DType>
-  void quantization_int8_act(string qmod,
+  void quantization_int8_act(std::string qmod,
                              Tensor<gpu, 3, DType> data,Tensor<gpu, 3, DType> &out,
                              Tensor<gpu, 1, DType> aux,
                              DType decay,Stream<gpu> *s,int quant_countdown,
                              bool init,bool is_train){
 
     int num = out.size(0)*out.size(1)*out.size(2);
-    if(qmod==string("minmax")){
+    if(qmod==std::string("minmax")){
       int offset =  (num+2*THEAD_PER_BLOCK)/(2*THEAD_PER_BLOCK);
       DType *Temp;
       cudaMalloc((void **)&Temp,sizeof(DType)*offset*4);
@@ -419,7 +418,7 @@ namespace mshadow{
                                                                       aux.dptr_,
                                                                       quant_countdown,is_train);
       cudaFree(Temp);
-    } else if(qmod==string("power2")){
+    } else if(qmod==std::string("power2")){
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
                                                                                          aux[0]);
@@ -427,7 +426,7 @@ namespace mshadow{
   }
 
   template<typename DType>
-  void quantization_grad(string qmod,
+  void quantization_grad(std::string qmod,
                          Tensor<gpu, 3, DType> gdata,Tensor<gpu, 3, DType> &grad,
                          Tensor<gpu, 3, DType> data,Tensor<gpu, 1, DType> &aux,
                          Stream<gpu> *s){
@@ -476,8 +475,8 @@ namespace mshadow{
                                                                                 grad.dptr_,aux[0]);
   //update aux
   mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_LOG2T<DType>,gpu>::Launch(s,1,
-                                                                          src_grad[0],
-                                                                          aux.dptr_);
+                                                                          aux.dptr_,
+                                                                          src_grad[0]);
 
   cudaFree(Temp);
   }

@@ -73,14 +73,14 @@ namespace mxnet {
     template<typename DType>
     struct QUANT_WEIGHT_GPU_POWER2{
       __device__ static void Map(int i,DType *data,DType *out,
-                                 DType log2t){
+                                 DType *log2t){
 
         __shared__ DType quant_unit;
 
         int tidx=threadIdx.x;
         //compute quantization inside each block
         if(tidx<1){
-          quant_unit=(::pow(2.0,::ceil(log2t))*DType(2.0))/DType(QUANT_LEVEL);
+          quant_unit=(::pow(2.0,::ceil(*log2t))*DType(2.0))/DType(QUANT_LEVEL);
         }
 
         __syncthreads();
@@ -210,13 +210,13 @@ namespace mxnet {
 
     template<typename DType>
     struct GRAD_POWER2{
-      __device__ static void Map(int i,DType *data,DType *gdata,DType *out,DType log2t){
+      __device__ static void Map(int i,DType *data,DType *gdata,DType *out,DType *log2t){
         __shared__ DType quant_unit;
 
         int tidx=threadIdx.x;
         //compute quantization inside each block
         if(tidx<1){
-          quant_unit=(::pow(2.0,::ceil(log2t))*DType(2.0))/DType(QUANT_LEVEL);
+          quant_unit=(::pow(2.0,::ceil(*log2t))*DType(2.0))/DType(QUANT_LEVEL);
         }
         __syncthreads();
 
@@ -232,13 +232,13 @@ namespace mxnet {
 
     template<typename DType>
     struct GRAD_WEIGHT_POWER2{
-      __device__ static void Map(int i,DType *data,DType *gdata,DType *out,DType log2t){
+      __device__ static void Map(int i,DType *data,DType *gdata,DType *out,DType *log2t){
         __shared__ DType quant_unit;
 
         int tidx=threadIdx.x;
         //compute quantization inside each block
         if(tidx<1){
-          quant_unit=(::pow(2.0,::ceil(log2t))*DType(2.0))/DType(QUANT_LEVEL);
+          quant_unit=(::pow(2.0,::ceil(*log2t))*DType(2.0))/DType(QUANT_LEVEL);
         }
         __syncthreads();
 
@@ -254,15 +254,15 @@ namespace mxnet {
     struct INIT_LOG2T{
       __device__ static void Map(int i,DType *log2t,DType *max_val,DType*min_val){
         DType t=DType(::abs(*max_val)>::abs(*min_val)? std::abs(*max_val):std::abs(*min_val));
-        t=DType(t>1e-3?t:1e-3);  
-        *(log2t)-=log2f(t);
+        t=t>DType(0.001)?t:DType(0.001);  
+        *(log2t)=log2f(t);
       }
     };
 
     template<typename DType>
     struct UPDATE_LOG2T{
-      __device__ static void Map(int i,DType *log2t,DType grad){
-        DType norm=grad/DType(::abs(grad)+1e-3);        
+      __device__ static void Map(int i,DType *log2t,DType *grad){
+        DType norm=*grad/DType(::abs(*grad)+1e-3);        
         *(log2t)-=1e-3*norm;
       }
     };
@@ -379,7 +379,7 @@ namespace mshadow{
       }
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
-                                                                                         aux[0]);
+                                                                                         aux.dptr_);
     }
   }
   template<typename DType>
@@ -423,7 +423,7 @@ namespace mshadow{
       }
       mxnet::op::mxnet_op::Kernel<mxnet::op::QUANT_WEIGHT_GPU_POWER2<DType>,gpu>::Launch(s,num,
                                                                                          data.dptr_,out.dptr_,
-                                                                                         aux[0]);
+                                                                                         aux.dptr_);
     }
   }
 
@@ -440,7 +440,7 @@ namespace mshadow{
   //compute gradient for threash hold
   mxnet::op::mxnet_op::Kernel<mxnet::op::GRAD_POWER2<DType>,gpu>::Launch(s,num,
                                                                          data.dptr_,gdata.dptr_,
-                                                                         grad.dptr_,aux[0]);
+                                                                         grad.dptr_,aux.dptr_);
   //reduce gradient for threash hold
   int current_num = num;
   int pre_num;
@@ -474,11 +474,11 @@ namespace mshadow{
   //compute grad
   mxnet::op::mxnet_op::Kernel<mxnet::op::GRAD_WEIGHT_POWER2<DType>,gpu>::Launch(s,num,
                                                                                 data.dptr_,gdata.dptr_,
-                                                                                grad.dptr_,aux[0]);
+                                                                                grad.dptr_,aux.dptr_);
   //update aux
   mxnet::op::mxnet_op::Kernel<mxnet::op::UPDATE_LOG2T<DType>,gpu>::Launch(s,1,
                                                                           aux.dptr_,
-                                                                          src_grad[0]);
+                                                                          src_grad);
 
   cudaFree(Temp);
   }
